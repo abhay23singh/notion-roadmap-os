@@ -1,4 +1,4 @@
-import React, { useState, useMemo} from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   CheckSquare, 
   BookOpen, 
@@ -15,13 +15,51 @@ import {
   CheckCircle2,
   Circle,
   FileText,
-  Tag
+  Tag,
+  Sparkles,
+  Bot,
+  Code,
+  HelpCircle,
+  RefreshCw,
+  Zap,
+  Plus,
+  Trash2 // Added Trash2 icon
 } from 'lucide-react';
 
-// --- DATA STRUCTURE ---
-// Populating Phase 1 fully based on user prompt.
-// Populating Phase 2 & 3 with representative structures to show the "60 Day" scale.
+// --- GEMINI API INTEGRATION ---
+const callGemini = async (prompt) => {
+  const apiKey = ""; // Injected by environment
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }]
+  };
 
+  let delay = 1000;
+  for (let i = 0; i < 5; i++) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        if (response.status === 429) throw new Error('Too Many Requests');
+        throw new Error(`API Error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
+    } catch (error) {
+      if (i === 4) return `Error: ${error.message}. Please try again later.`;
+      await new Promise(resolve => setTimeout(resolve, delay));
+      delay *= 2;
+    }
+  }
+};
+
+// --- DATA STRUCTURE ---
 const generateInitialData = () => {
   const phase1 = [
     {
@@ -331,20 +369,49 @@ const PhaseBadge = ({ phase }) => {
 
 export default function NotionRoadmapOS() {
   const [data, setData] = useState(generateInitialData());
-  const [view, setView] = useState("table"); // table, board
-  
-  // CHANGED: Use selectedDayId (primitive) to track selection.
-  // This allows us to derive 'selectedDay' from the latest 'data' state, 
-  // ensuring the modal is always in sync with the main database.
+  const [view, setView] = useState("table"); 
   const [selectedDayId, setSelectedDayId] = useState(null); 
-  
-  const [filter, setFilter] = useState("All"); // All, ISTQB, Automation
+  const [filter, setFilter] = useState("All"); 
   const [search, setSearch] = useState("");
 
-  // Derived selectedDay object based on ID and current Data
+  // AI State
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResponse, setAiResponse] = useState(null);
+  const [aiMode, setAiMode] = useState(null); // 'quiz', 'explain', 'code'
+
+  // New Item State
+  const [newItemText, setNewItemText] = useState("");
+
   const selectedDay = useMemo(() => 
     data.find(d => d.day === selectedDayId) || null, 
   [data, selectedDayId]);
+
+  // Reset states when day changes
+  useEffect(() => {
+    setAiResponse(null);
+    setAiMode(null);
+    setAiLoading(false);
+    setNewItemText("");
+  }, [selectedDayId]);
+
+  const handleAiAction = async (mode, dayData) => {
+    setAiMode(mode);
+    setAiLoading(true);
+    setAiResponse(null);
+
+    let prompt = "";
+    if (mode === "quiz") {
+      prompt = `Create 3 short multiple-choice questions (with 4 options each) to test knowledge on: "${dayData.title}". The questions should be relevant to software testing or Python automation. Format as plain text with the correct answer revealed at the very end.`;
+    } else if (mode === "explain") {
+      prompt = `Explain the concept of "${dayData.title}" simply, as if teaching a beginner software tester. Use an analogy if possible. Keep it under 150 words.`;
+    } else if (mode === "code") {
+      prompt = `Write a concise Python Playwright script that demonstrates: "${dayData.title}". Include comments explaining the key parts.`;
+    }
+
+    const result = await callGemini(prompt);
+    setAiResponse(result);
+    setAiLoading(false);
+  };
 
   // Statistics
   const completed = data.filter(d => d.status === "Done").length;
@@ -373,13 +440,57 @@ export default function NotionRoadmapOS() {
     setData(prev => prev.map(d => {
       if (d.day === day) {
         const newChecklist = d.checklist.map(i => i.id === itemId ? { ...i, done: !i.done } : i);
-        // Auto-update status logic
         const allDone = newChecklist.every(i => i.done);
         const someDone = newChecklist.some(i => i.done);
         let newStatus = d.status;
         if (allDone) newStatus = "Done";
         else if (someDone) newStatus = "In Progress";
+        else newStatus = "Not Started"; // Ensure it can revert if manual override allows
         
+        return { ...d, checklist: newChecklist, status: newStatus };
+      }
+      return d;
+    }));
+  };
+
+  const addChecklistItem = (day) => {
+    if (!newItemText.trim()) return;
+    setData(prev => prev.map(d => {
+      if (d.day === day) {
+        const newChecklist = [...d.checklist, { id: `custom-${Date.now()}`, text: newItemText, done: false }];
+        
+        // Recalculate status - if adding new item, it's not done, so status might regress from Done to In Progress
+        const allDone = newChecklist.every(i => i.done);
+        const someDone = newChecklist.some(i => i.done);
+        let newStatus = "Not Started";
+        if (allDone) newStatus = "Done";
+        else if (someDone) newStatus = "In Progress";
+        
+        return { ...d, checklist: newChecklist, status: newStatus };
+      }
+      return d;
+    }));
+    setNewItemText("");
+  };
+
+  const deleteChecklistItem = (day, itemId) => {
+    setData(prev => prev.map(d => {
+      if (d.day === day) {
+        const newChecklist = d.checklist.filter(i => i.id !== itemId);
+        
+        // Recalculate status based on remaining items
+        let newStatus = d.status;
+        if (newChecklist.length === 0) {
+            newStatus = "Not Started";
+        } else {
+            const allDone = newChecklist.every(i => i.done);
+            const someDone = newChecklist.some(i => i.done);
+            
+            if (allDone) newStatus = "Done";
+            else if (someDone) newStatus = "In Progress";
+            else newStatus = "Not Started";
+        }
+
         return { ...d, checklist: newChecklist, status: newStatus };
       }
       return d;
@@ -389,8 +500,6 @@ export default function NotionRoadmapOS() {
   const updateNotes = (day, newNotes) => {
     setData(prev => prev.map(d => d.day === day ? { ...d, notes: newNotes } : d));
   };
-
-  // --- SUB-VIEWS ---
 
   const TableView = () => (
     <div className="w-full overflow-x-auto">
@@ -408,7 +517,6 @@ export default function NotionRoadmapOS() {
           {filteredData.map(item => (
             <tr 
               key={item.day} 
-              // CHANGED: Set ID instead of object
               onClick={() => setSelectedDayId(item.day)}
               className="border-b border-gray-100 hover:bg-gray-50 cursor-pointer group"
             >
@@ -450,7 +558,6 @@ export default function NotionRoadmapOS() {
               {filteredData.filter(i => i.status === col).map(item => (
                 <div 
                   key={item.day}
-                  // CHANGED: Set ID instead of object
                   onClick={() => setSelectedDayId(item.day)}
                   className="bg-white p-3 rounded shadow-sm border border-gray-200 hover:shadow cursor-pointer"
                 >
@@ -471,14 +578,11 @@ export default function NotionRoadmapOS() {
     );
   };
 
-  // --- MAIN LAYOUT ---
-
   return (
     <div className="min-h-screen bg-[#F7F7F5] text-[#37352F] font-sans selection:bg-blue-100">
       
       {/* SIDE PANEL / MODAL (NOTION PAGE VIEW) */}
       {selectedDay && (
-        // CHANGED: Reset ID to null on close
         <div className="fixed inset-0 z-50 flex justify-end bg-black/20 backdrop-blur-sm" onClick={() => setSelectedDayId(null)}>
           <div 
             className="w-full max-w-2xl bg-white h-full shadow-2xl overflow-y-auto transform transition-transform animate-in slide-in-from-right duration-200"
@@ -487,7 +591,6 @@ export default function NotionRoadmapOS() {
             {/* Page Header */}
             <div className="h-32 bg-gradient-to-r from-blue-50 to-indigo-50 w-full relative">
               <button 
-                // CHANGED: Reset ID to null on close
                 onClick={() => setSelectedDayId(null)}
                 className="absolute top-4 right-4 p-1 hover:bg-gray-200 rounded text-gray-500"
               >
@@ -515,7 +618,6 @@ export default function NotionRoadmapOS() {
                   <div className="w-32 text-gray-500 flex items-center gap-2"><Trello size={14}/> Status</div>
                   <select 
                     value={selectedDay.status}
-                    // This now properly updates because selectedDay is derived from the main data state
                     onChange={(e) => updateStatus(selectedDay.day, e.target.value)}
                     className="bg-transparent hover:bg-gray-100 rounded px-1 -ml-1 cursor-pointer focus:outline-none focus:ring-1 focus:ring-blue-300"
                   >
@@ -549,6 +651,65 @@ export default function NotionRoadmapOS() {
                   </div>
                 </section>
 
+                {/* ✨ AI STUDY PARTNER ✨ */}
+                <section>
+                  <h3 className="text-lg font-semibold mb-3 flex items-center gap-2 text-indigo-600">
+                    <Sparkles size={18} className="text-indigo-500"/> AI Study Partner
+                  </h3>
+                  <div className="bg-indigo-50/50 rounded-lg border border-indigo-100 p-4">
+                    
+                    {/* Action Buttons */}
+                    <div className="flex gap-2 flex-wrap mb-4">
+                      <button 
+                        onClick={() => handleAiAction("explain", selectedDay)}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-white border border-indigo-200 text-indigo-700 rounded shadow-sm hover:bg-indigo-50 hover:border-indigo-300 transition-all text-sm font-medium"
+                      >
+                        <HelpCircle size={16}/> Explain Simply
+                      </button>
+                      
+                      <button 
+                        onClick={() => handleAiAction("quiz", selectedDay)}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-white border border-indigo-200 text-indigo-700 rounded shadow-sm hover:bg-indigo-50 hover:border-indigo-300 transition-all text-sm font-medium"
+                      >
+                        <Bot size={16}/> Generate Quiz
+                      </button>
+
+                      {(selectedDay.phase === "Automation" || selectedDay.phase === "Project") && (
+                        <button 
+                          onClick={() => handleAiAction("code", selectedDay)}
+                          className="flex items-center gap-2 px-3 py-1.5 bg-white border border-indigo-200 text-indigo-700 rounded shadow-sm hover:bg-indigo-50 hover:border-indigo-300 transition-all text-sm font-medium"
+                        >
+                          <Code size={16}/> Show Code Example
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Output Area */}
+                    {(aiLoading || aiResponse) && (
+                      <div className="bg-white rounded border border-indigo-100 p-4 shadow-sm animate-in fade-in zoom-in-95 duration-200">
+                        {aiLoading ? (
+                          <div className="flex items-center gap-2 text-gray-500 py-4">
+                            <RefreshCw size={18} className="animate-spin"/>
+                            <span className="text-sm">Gemini is thinking...</span>
+                          </div>
+                        ) : (
+                          <div className="prose prose-sm max-w-none text-gray-700">
+                            <div className="flex justify-between items-start mb-2">
+                              <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">
+                                {aiMode === 'quiz' ? 'Mock Questions' : aiMode === 'code' ? 'Code Snippet' : 'Explanation'}
+                              </span>
+                              <button onClick={() => setAiResponse(null)} className="text-gray-400 hover:text-gray-600"><X size={14}/></button>
+                            </div>
+                            <div className="whitespace-pre-wrap font-mono text-sm leading-relaxed bg-gray-50 p-3 rounded border border-gray-100">
+                              {aiResponse}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </section>
+
                 {/* Checklist Block */}
                 <section>
                   <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
@@ -564,11 +725,37 @@ export default function NotionRoadmapOS() {
                         <button className={`mt-0.5 ${item.done ? 'text-blue-500' : 'text-gray-300 group-hover:text-gray-400'}`}>
                           {item.done ? <CheckCircle2 size={20} /> : <Circle size={20} />}
                         </button>
-                        <span className={`${item.done ? 'line-through decoration-gray-300 text-gray-400' : 'text-gray-800'}`}>
+                        <span className={`flex-1 ${item.done ? 'line-through decoration-gray-300 text-gray-400' : 'text-gray-800'}`}>
                           {item.text}
                         </span>
+                        
+                        {/* Delete Button */}
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteChecklistItem(selectedDay.day, item.id);
+                          }}
+                          className="text-gray-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                          title="Delete item"
+                        >
+                          <Trash2 size={16} />
+                        </button>
                       </div>
                     ))}
+                    {/* NEW INPUT FIELD */}
+                    <div className="mt-2 flex items-center gap-3 p-2 rounded hover:bg-gray-50 transition-colors">
+                      <button onClick={() => addChecklistItem(selectedDay.day)} className="text-gray-400 hover:text-blue-500 mt-0.5">
+                        <Plus size={20} />
+                      </button>
+                      <input 
+                        type="text" 
+                        value={newItemText}
+                        onChange={(e) => setNewItemText(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && addChecklistItem(selectedDay.day)}
+                        placeholder="Add a new item..."
+                        className="flex-1 bg-transparent text-base text-gray-700 placeholder:text-gray-400 focus:outline-none"
+                      />
+                    </div>
                   </div>
                 </section>
 
