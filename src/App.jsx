@@ -23,12 +23,14 @@ import {
   RefreshCw,
   Zap,
   Plus,
-  Trash2 // Added Trash2 icon
+  Trash2,
+  Eye, // Added Eye icon for reveal
+  EyeOff 
 } from 'lucide-react';
 
 // --- GEMINI API INTEGRATION ---
 const callGemini = async (prompt) => {
-  const apiKey = "AIzaSyAvC6v4fMlSEj38_k09VmyZySRBp9mMils"; 
+  const apiKey = ""; // Injected by environment
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
   
   const payload = {
@@ -401,15 +403,32 @@ export default function NotionRoadmapOS() {
 
     let prompt = "";
     if (mode === "quiz") {
-      prompt = `Create 3 short multiple-choice questions (with 4 options each) to test knowledge on: "${dayData.title}". The questions should be relevant to software testing or Python automation. Format as plain text with the correct answer revealed at the very end.`;
+      // Prompt specifically asks for JSON for better parsing
+      prompt = `Create 3 multiple-choice questions for "${dayData.title}". Return ONLY a raw JSON array (no markdown fences) where each object has: "question", "options" (array of strings), and "answer" (the correct string). Do not include any intro text.`;
     } else if (mode === "explain") {
       prompt = `Explain the concept of "${dayData.title}" simply, as if teaching a beginner software tester. Use an analogy if possible. Keep it under 150 words.`;
     } else if (mode === "code") {
       prompt = `Write a concise Python Playwright script that demonstrates: "${dayData.title}". Include comments explaining the key parts.`;
     }
 
-    const result = await callGemini(prompt);
-    setAiResponse(result);
+    let result = await callGemini(prompt);
+    
+    // Parse JSON for quiz mode
+    if (mode === "quiz") {
+      try {
+        // Simple clean up in case model adds fences
+        const cleaned = result.replace(/```json|```/g, '').trim();
+        const json = JSON.parse(cleaned);
+        setAiResponse(json);
+      } catch (e) {
+        console.error("Failed to parse quiz JSON", e);
+        // Fallback to text if parsing fails
+        setAiResponse("Error generating interactive quiz. Try again.");
+      }
+    } else {
+      setAiResponse(result);
+    }
+    
     setAiLoading(false);
   };
 
@@ -700,9 +719,44 @@ export default function NotionRoadmapOS() {
                               </span>
                               <button onClick={() => setAiResponse(null)} className="text-gray-400 hover:text-gray-600"><X size={14}/></button>
                             </div>
-                            <div className="whitespace-pre-wrap font-mono text-sm leading-relaxed bg-gray-50 p-3 rounded border border-gray-100">
-                              {aiResponse}
-                            </div>
+
+                            {/* CONDITIONAL RENDERING FOR QUIZ vs TEXT */}
+                            {aiMode === 'quiz' && Array.isArray(aiResponse) ? (
+                              <div className="space-y-4">
+                                {aiResponse.map((q, i) => (
+                                  <div key={i} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                    <p className="font-medium text-gray-800 mb-3 text-base">{i+1}. {q.question}</p>
+                                    <ul className="space-y-2 mb-4">
+                                      {q.options.map((opt, j) => (
+                                        <li key={j} className="flex items-center gap-3 p-2 rounded hover:bg-gray-100 transition-colors">
+                                          <span className="w-6 h-6 rounded-full border border-gray-300 flex items-center justify-center text-xs font-medium text-gray-500 bg-white">
+                                            {String.fromCharCode(65+j)}
+                                          </span>
+                                          <span className="text-sm text-gray-700">{opt}</span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                    {/* Reveal Answer using HTML details/summary */}
+                                    <details className="group">
+                                      <summary className="inline-flex items-center gap-2 text-xs font-medium text-indigo-600 cursor-pointer hover:text-indigo-700 select-none list-none">
+                                        <div className="flex items-center gap-2 px-3 py-1.5 bg-white border border-indigo-200 rounded-full shadow-sm group-open:bg-indigo-50 transition-all">
+                                          <Eye size={14} />
+                                          <span>Show Answer</span>
+                                        </div>
+                                      </summary>
+                                      <div className="mt-3 text-sm text-gray-800 bg-green-50 p-3 rounded border border-green-100 animate-in fade-in slide-in-from-top-1">
+                                        <span className="font-bold text-green-700">Correct Answer:</span> {q.answer}
+                                      </div>
+                                    </details>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="whitespace-pre-wrap font-mono text-sm leading-relaxed bg-gray-50 p-3 rounded border border-gray-100">
+                                {aiResponse}
+                              </div>
+                            )}
+
                           </div>
                         )}
                       </div>
