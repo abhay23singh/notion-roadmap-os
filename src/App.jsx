@@ -24,14 +24,19 @@ import {
   Zap,
   Plus,
   Trash2,
-  Eye, // Added Eye icon for reveal
-  EyeOff 
+  Eye, 
+  EyeOff,
+  Settings // Added Settings icon
 } from 'lucide-react';
 
 // --- GEMINI API INTEGRATION ---
-const callGemini = async (prompt) => {
-  const apiKey = "AIzaSyAvC6v4fMlSEj38_k09VmyZySRBp9mMils"; // Injected by environment
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+// Updated to accept the key dynamically
+const callGemini = async (prompt, userKey) => {
+  if (!userKey) {
+    throw new Error("Missing API Key. Please add it in Settings ⚙️.");
+  }
+  
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${userKey}`;
   
   const payload = {
     contents: [{ parts: [{ text: prompt }] }]
@@ -47,6 +52,7 @@ const callGemini = async (prompt) => {
       });
 
       if (!response.ok) {
+        if (response.status === 403) throw new Error('403 Permission Denied. Check Key restrictions.');
         if (response.status === 429) throw new Error('Too Many Requests');
         throw new Error(`API Error: ${response.status}`);
       }
@@ -54,7 +60,7 @@ const callGemini = async (prompt) => {
       const data = await response.json();
       return data.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
     } catch (error) {
-      if (i === 4) return `Error: ${error.message}. Please try again later.`;
+      if (i === 4) throw error; // Re-throw the last error
       await new Promise(resolve => setTimeout(resolve, delay));
       delay *= 2;
     }
@@ -384,6 +390,15 @@ export default function NotionRoadmapOS() {
   // New Item State
   const [newItemText, setNewItemText] = useState("");
 
+  // API Key State (Persisted)
+  const [userApiKey, setUserApiKey] = useState(() => localStorage.getItem("gemini_api_key") || "");
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Persist key to localStorage when changed
+  useEffect(() => {
+    localStorage.setItem("gemini_api_key", userApiKey);
+  }, [userApiKey]);
+
   const selectedDay = useMemo(() => 
     data.find(d => d.day === selectedDayId) || null, 
   [data, selectedDayId]);
@@ -411,22 +426,32 @@ export default function NotionRoadmapOS() {
       prompt = `Write a concise Python Playwright script that demonstrates: "${dayData.title}". Include comments explaining the key parts.`;
     }
 
-    let result = await callGemini(prompt);
-    
-    // Parse JSON for quiz mode
-    if (mode === "quiz") {
-      try {
-        // Simple clean up in case model adds fences
-        const cleaned = result.replace(/```json|```/g, '').trim();
-        const json = JSON.parse(cleaned);
-        setAiResponse(json);
-      } catch (e) {
-        console.error("Failed to parse quiz JSON", e);
-        // Fallback to text if parsing fails
-        setAiResponse("Error generating interactive quiz. Try again.");
+    try {
+      // Pass the userApiKey to callGemini
+      let result = await callGemini(prompt, userApiKey);
+      
+      // Parse JSON for quiz mode
+      if (mode === "quiz") {
+        try {
+          const cleaned = result.replace(/```json|```/g, '').trim();
+          const json = JSON.parse(cleaned);
+          setAiResponse(json);
+        } catch (e) {
+          console.error("Failed to parse quiz JSON", e);
+          setAiResponse("Error generating interactive quiz. Try again.");
+        }
+      } else {
+        setAiResponse(result);
       }
-    } else {
-      setAiResponse(result);
+    } catch (error) {
+      setAiResponse(
+        <div className="text-red-600 bg-red-50 p-3 rounded">
+          <strong>Error:</strong> {error.message}
+          <div className="mt-2 text-sm text-gray-700">
+             Check the <strong>Settings (⚙️)</strong> icon at the top right to ensure your API Key is saved and has no referrer restrictions (or allows this domain).
+          </div>
+        </div>
+      );
     }
     
     setAiLoading(false);
@@ -464,7 +489,7 @@ export default function NotionRoadmapOS() {
         let newStatus = d.status;
         if (allDone) newStatus = "Done";
         else if (someDone) newStatus = "In Progress";
-        else newStatus = "Not Started"; // Ensure it can revert if manual override allows
+        else newStatus = "Not Started"; 
         
         return { ...d, checklist: newChecklist, status: newStatus };
       }
@@ -478,7 +503,6 @@ export default function NotionRoadmapOS() {
       if (d.day === day) {
         const newChecklist = [...d.checklist, { id: `custom-${Date.now()}`, text: newItemText, done: false }];
         
-        // Recalculate status - if adding new item, it's not done, so status might regress from Done to In Progress
         const allDone = newChecklist.every(i => i.done);
         const someDone = newChecklist.some(i => i.done);
         let newStatus = "Not Started";
@@ -497,7 +521,6 @@ export default function NotionRoadmapOS() {
       if (d.day === day) {
         const newChecklist = d.checklist.filter(i => i.id !== itemId);
         
-        // Recalculate status based on remaining items
         let newStatus = d.status;
         if (newChecklist.length === 0) {
             newStatus = "Not Started";
@@ -600,6 +623,41 @@ export default function NotionRoadmapOS() {
   return (
     <div className="min-h-screen bg-[#F7F7F5] text-[#37352F] font-sans selection:bg-blue-100">
       
+      {/* SETTINGS MODAL */}
+      {showSettings && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setShowSettings(false)}>
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-bold flex items-center gap-2"><Settings size={20} /> App Settings</h2>
+              <button onClick={() => setShowSettings(false)}><X size={20} className="text-gray-400 hover:text-gray-600"/></button>
+            </div>
+            
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Google Gemini API Key</label>
+              <input 
+                type="password" 
+                value={userApiKey}
+                onChange={(e) => setUserApiKey(e.target.value)}
+                placeholder="Paste AIza... key here"
+                className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-2">
+                This key is stored locally in your browser. It is required for the AI Study Partner features.
+              </p>
+            </div>
+
+            <div className="flex justify-end">
+              <button 
+                onClick={() => setShowSettings(false)}
+                className="bg-blue-600 text-white px-4 py-2 rounded text-sm font-medium hover:bg-blue-700"
+              >
+                Save & Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* SIDE PANEL / MODAL (NOTION PAGE VIEW) */}
       {selectedDay && (
         <div className="fixed inset-0 z-50 flex justify-end bg-black/20 backdrop-blur-sm" onClick={() => setSelectedDayId(null)}>
@@ -919,6 +977,17 @@ export default function NotionRoadmapOS() {
                  </button>
                ))}
             </div>
+
+             {/* Settings Button */}
+             <div className="h-6 w-px bg-gray-300 mx-1"></div>
+             <button 
+               onClick={() => setShowSettings(true)}
+               className="text-gray-400 hover:text-gray-700 p-1.5 rounded-full hover:bg-gray-100 transition-colors"
+               title="API Settings"
+             >
+               <Settings size={20} />
+             </button>
+
           </div>
         </div>
 
