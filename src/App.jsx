@@ -26,11 +26,32 @@ import {
   Trash2,
   Eye, 
   EyeOff,
-  Settings // Added Settings icon
+  Settings
 } from 'lucide-react';
 
+// --- UTILS ---
+// Simple component to render text with bold markdown support (**text**)
+const FormattedText = ({ text }) => {
+  if (!text) return null;
+  return (
+    <div className="font-sans text-gray-700 leading-relaxed space-y-2">
+      {text.split('\n').map((paragraph, idx) => {
+        if (!paragraph.trim()) return <br key={idx} />;
+        return (
+          <p key={idx}>
+            {paragraph.split(/(\*\*.*?\*\*)/g).map((part, i) => 
+              part.startsWith('**') && part.endsWith('**') 
+                ? <strong key={i} className="font-semibold text-indigo-900 bg-indigo-50 px-1 rounded">{part.slice(2, -2)}</strong> 
+                : part
+            )}
+          </p>
+        );
+      })}
+    </div>
+  );
+};
+
 // --- GEMINI API INTEGRATION ---
-// Updated to accept the key dynamically
 const callGemini = async (prompt, userKey) => {
   if (!userKey) {
     throw new Error("Missing API Key. Please add it in Settings ⚙️.");
@@ -385,7 +406,7 @@ export default function NotionRoadmapOS() {
   // AI State
   const [aiLoading, setAiLoading] = useState(false);
   const [aiResponse, setAiResponse] = useState(null);
-  const [aiMode, setAiMode] = useState(null); // 'quiz', 'explain', 'code'
+  const [aiMode, setAiMode] = useState(null); // 'quiz', 'explain', 'code', 'explain_task'
 
   // New Item State
   const [newItemText, setNewItemText] = useState("");
@@ -411,23 +432,23 @@ export default function NotionRoadmapOS() {
     setNewItemText("");
   }, [selectedDayId]);
 
-  const handleAiAction = async (mode, dayData) => {
+  const handleAiAction = async (mode, dayData, specificContext = null) => {
     setAiMode(mode);
     setAiLoading(true);
     setAiResponse(null);
 
     let prompt = "";
     if (mode === "quiz") {
-      // Prompt specifically asks for JSON for better parsing
       prompt = `Create 3 multiple-choice questions for "${dayData.title}". Return ONLY a raw JSON array (no markdown fences) where each object has: "question", "options" (array of strings), and "answer" (the correct string). Do not include any intro text.`;
     } else if (mode === "explain") {
-      prompt = `Explain the concept of "${dayData.title}" simply, as if teaching a beginner software tester. Use an analogy if possible. Keep it under 150 words.`;
+      prompt = `Explain the concept of "${dayData.title}" simply, as if teaching a beginner software tester. Use **bold** for key terms. Use an analogy if possible. Keep it under 150 words.`;
     } else if (mode === "code") {
       prompt = `Write a concise Python Playwright script that demonstrates: "${dayData.title}". Include comments explaining the key parts.`;
+    } else if (mode === "explain_task") {
+      prompt = `Briefly explain how to complete this task: "${specificContext}". The context is learning "${dayData.title}". Provide practical steps or definitions. Use **bold** for key terms. Keep it short (under 3 sentences).`;
     }
 
     try {
-      // Pass the userApiKey to callGemini
       let result = await callGemini(prompt, userApiKey);
       
       // Parse JSON for quiz mode
@@ -773,7 +794,7 @@ export default function NotionRoadmapOS() {
                           <div className="prose prose-sm max-w-none text-gray-700">
                             <div className="flex justify-between items-start mb-2">
                               <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">
-                                {aiMode === 'quiz' ? 'Mock Questions' : aiMode === 'code' ? 'Code Snippet' : 'Explanation'}
+                                {aiMode === 'quiz' ? 'Mock Questions' : aiMode === 'code' ? 'Code Snippet' : aiMode === 'explain_task' ? 'Task Explanation' : 'Explanation'}
                               </span>
                               <button onClick={() => setAiResponse(null)} className="text-gray-400 hover:text-gray-600"><X size={14}/></button>
                             </div>
@@ -810,8 +831,8 @@ export default function NotionRoadmapOS() {
                                 ))}
                               </div>
                             ) : (
-                              <div className="whitespace-pre-wrap font-mono text-sm leading-relaxed bg-gray-50 p-3 rounded border border-gray-100">
-                                {aiResponse}
+                              <div className="bg-white rounded-lg p-1">
+                                <FormattedText text={aiResponse} />
                               </div>
                             )}
 
@@ -841,6 +862,18 @@ export default function NotionRoadmapOS() {
                           {item.text}
                         </span>
                         
+                        {/* Explain Button */}
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleAiAction('explain_task', selectedDay, item.text);
+                          }}
+                          className="text-gray-300 hover:text-indigo-500 opacity-0 group-hover:opacity-100 transition-all mr-1"
+                          title="Explain this task"
+                        >
+                          <HelpCircle size={16} />
+                        </button>
+
                         {/* Delete Button */}
                         <button 
                           onClick={(e) => {
